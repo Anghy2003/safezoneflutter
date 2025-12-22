@@ -1,0 +1,70 @@
+name: safezone_app
+description: "Sistema de alerta comunitaria inteligente"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # Mapas (OpenStreetMap)
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+
+  # Geolocalización
+  geolocator: ^10.1.0
+  geocoding: ^3.0.0
+
+  # Permisos
+  permission_handler: ^11.1.0
+  video_thumbnail: ^0.5.3
+
+  # Firebase Core & Auth & Messaging
+  firebase_core: ^3.0.0
+  firebase_messaging: ^15.0.0
+  firebase_auth: ^5.0.0
+
+  # Notificaciones locales (para mostrar FCM en foreground)
+  flutter_local_notifications: ^17.1.0
+
+  # Google Login
+  google_sign_in: ^6.2.1
+
+  # WebSocket
+  stomp_dart_client: ^0.4.4
+
+  # Storage
+  shared_preferences: ^2.2.2
+  url_launcher: ^6.3.0
+
+  # Multimedia
+  image_picker: ^1.0.7
+  record: ^6.1.2
+  path_provider: ^2.1.0
+
+  # HTTP
+  http: ^1.2.0
+
+  # Voz
+  speech_to_text: ^7.3.0
+
+  # Info del dispositivo (para enviar al backend)
+  device_info_plus: ^10.0.1
+
+  curved_navigation_bar: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
