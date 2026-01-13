@@ -10,9 +10,11 @@ class VerifySuccessScreen extends StatefulWidget {
 
 class _VerifySuccessScreenState extends State<VerifySuccessScreen>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _fadeAnimation;
+  late final AnimationController _controller;
+  late final Animation<double> _scaleAnimation;
+  late final Animation<double> _fadeAnimation;
+
+  bool _navigating = false;
 
   @override
   void initState() {
@@ -39,12 +41,21 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
     super.dispose();
   }
 
+  // ✅ FIX: limpiar stack de verdad (rootNavigator) para que NO vuelva a "Unirse"
+  void _handleContinue() {
+    if (_navigating) return;
+    setState(() => _navigating = true);
+
+    Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil(
+      AppRoutes.home,
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final hour = DateTime.now().hour;
-    final bool isNightMode = hour >= 19 || hour < 6;
+    final bool isNightMode = Theme.of(context).brightness == Brightness.dark;
 
-    // 🎨 Paleta dinámica como en login/registro
     final Color bgColor =
         isNightMode ? const Color(0xFF05070A) : const Color(0xFFF3F4F6);
     final Color cardColor =
@@ -84,11 +95,10 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
               ),
               child: AnimatedBuilder(
                 animation: _controller,
-                builder: (context, child) {
+                builder: (context, _) {
                   return Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // ✅ Ícono de éxito animado
                       Transform.scale(
                         scale: _scaleAnimation.value,
                         child: Container(
@@ -99,10 +109,7 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
                             gradient: const LinearGradient(
                               begin: Alignment.topLeft,
                               end: Alignment.bottomRight,
-                              colors: [
-                                Color(0xFFFF6B6B),
-                                Color(0xFFE53935),
-                              ],
+                              colors: [Color(0xFFFF6B6B), Color(0xFFE53935)],
                             ),
                             boxShadow: [
                               BoxShadow(
@@ -112,10 +119,7 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
                                 offset: const Offset(0, 8),
                               ),
                             ],
-                            border: Border.all(
-                              color: Colors.white,
-                              width: 3,
-                            ),
+                            border: Border.all(color: Colors.white, width: 3),
                           ),
                           child: const Center(
                             child: Icon(
@@ -126,10 +130,7 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
                           ),
                         ),
                       ),
-
                       const SizedBox(height: 26),
-
-                      // 📝 Título
                       Opacity(
                         opacity: _fadeAnimation.value,
                         child: Text(
@@ -142,10 +143,7 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
                           ),
                         ),
                       ),
-
                       const SizedBox(height: 12),
-
-                      // 🧾 Mensaje
                       Opacity(
                         opacity: _fadeAnimation.value,
                         child: Text(
@@ -159,16 +157,13 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
                           ),
                         ),
                       ),
-
                       const SizedBox(height: 32),
-
-                      // 🔴 Botón Ir al inicio (animado como en login/registro)
                       Opacity(
                         opacity: _fadeAnimation.value,
                         child: _AnimatedPrimaryButton(
                           label: "Ir al inicio",
-                          isLoading: false,
-                          onTap: _handleContinue,
+                          isLoading: _navigating,
+                          onTap: _navigating ? null : _handleContinue,
                         ),
                       ),
                     ],
@@ -181,13 +176,9 @@ class _VerifySuccessScreenState extends State<VerifySuccessScreen>
       ),
     );
   }
-
-  void _handleContinue() {
-    AppRoutes.navigateAndClearStack(context, AppRoutes.home);
-  }
 }
 
-/// Botón rojo animado tipo apps 2025 (igual que en login/registro)
+/// Botón rojo animado
 class _AnimatedPrimaryButton extends StatefulWidget {
   final bool isLoading;
   final VoidCallback? onTap;
@@ -200,8 +191,7 @@ class _AnimatedPrimaryButton extends StatefulWidget {
   });
 
   @override
-  State<_AnimatedPrimaryButton> createState() =>
-      _AnimatedPrimaryButtonState();
+  State<_AnimatedPrimaryButton> createState() => _AnimatedPrimaryButtonState();
 }
 
 class _AnimatedPrimaryButtonState extends State<_AnimatedPrimaryButton>
@@ -218,11 +208,9 @@ class _AnimatedPrimaryButtonState extends State<_AnimatedPrimaryButton>
       lowerBound: 0.0,
       upperBound: 0.07,
     );
+
     _scale = Tween<double>(begin: 1.0, end: 0.93).animate(
-      CurvedAnimation(
-        parent: _pressController,
-        curve: Curves.easeOut,
-      ),
+      CurvedAnimation(parent: _pressController, curve: Curves.easeOut),
     );
   }
 
@@ -233,18 +221,11 @@ class _AnimatedPrimaryButtonState extends State<_AnimatedPrimaryButton>
   }
 
   void _onTapDown(TapDownDetails _) {
-    if (widget.onTap != null) {
-      _pressController.forward();
-    }
+    if (widget.onTap != null) _pressController.forward();
   }
 
-  void _onTapUp(TapUpDetails _) {
-    _pressController.reverse();
-  }
-
-  void _onTapCancel() {
-    _pressController.reverse();
-  }
+  void _onTapUp(TapUpDetails _) => _pressController.reverse();
+  void _onTapCancel() => _pressController.reverse();
 
   @override
   Widget build(BuildContext context) {
@@ -252,25 +233,22 @@ class _AnimatedPrimaryButtonState extends State<_AnimatedPrimaryButton>
       onTapDown: widget.onTap != null ? _onTapDown : null,
       onTapUp: widget.onTap != null ? _onTapUp : null,
       onTapCancel: widget.onTap != null ? _onTapCancel : null,
-      onTap: widget.onTap,
+      onTap: () {
+        // ✅ evita quedarse “aplastado” y navega limpio
+        _pressController.reverse();
+        widget.onTap?.call();
+      },
       child: AnimatedBuilder(
         animation: _pressController,
-        builder: (context, child) {
-          return Transform.scale(
-            scale: _scale.value,
-            child: child,
-          );
-        },
+        builder: (context, child) =>
+            Transform.scale(scale: _scale.value, child: child),
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(24),
             gradient: const LinearGradient(
-              colors: [
-                Color(0xFFFF5A5A),
-                Color(0xFFE53935),
-              ],
+              colors: [Color(0xFFFF5A5A), Color(0xFFE53935)],
             ),
             boxShadow: [
               BoxShadow(

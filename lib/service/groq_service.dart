@@ -1,51 +1,65 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-class GroqService {
-  final String apiKey;
+import '../config/api_config.dart';
 
-  GroqService({required this.apiKey});
+class SafeZoneAiApi {
+  static String get _base => ApiConfig.baseUrl;
 
-  Future<String> getEmergencyAdvice({
+  Future<String> chatIsis({
     required String emergencyType,
     required String userMessage,
+    List<Map<String, String>> history = const [],
   }) async {
-    final uri = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $apiKey',
-    };
-
-    final systemPrompt = """
-Eres Isis Ayuda, la asistente virtual de SafeZone.
-Responde siempre en español, de forma empática, cercana y calmada.
-No uses listas ni pasos.
-No des instrucciones médicas ni técnicas.
-No incites a confrontaciones.
-Si el usuario pide ayuda urgente, recuérdale que puede presionar tres veces el botón de volumen para enviar una alerta SafeZone.
-""";
+    final uri = Uri.parse("$_base/ai/chat");
 
     final body = {
-      "model": "llama-3.1-8b-instant",
-      "messages": [
-        {"role": "system", "content": systemPrompt},
-        {"role": "user", "content": userMessage}
-      ],
-      "temperature": 0.5,
+      "emergencyType": emergencyType,
+      "userMessage": userMessage,
+      "history": history, // [{role:"user", content:"..."}, {role:"assistant", content:"..."}]
     };
 
-    final response = await http.post(
+    final res = await http.post(
       uri,
-      headers: headers,
+      headers: {"Content-Type": "application/json"},
       body: jsonEncode(body),
     );
 
-    if (response.statusCode != 200) {
-      throw Exception('Error Groq: ${response.body}');
+    if (res.statusCode != 200) {
+      throw Exception("Backend AI chat error: ${res.statusCode} ${res.body}");
     }
 
-    final json = jsonDecode(response.body);
-    return json["choices"][0]["message"]["content"];
+    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    return (json["reply"] ?? "").toString();
+  }
+
+  Future<Map<String, dynamic>> analyzeIncident({
+    required String text,
+    List<String> imageUrls = const [],
+    String? imageBase64DataUrl,
+    String? audioTranscript,
+    String? userContext,
+  }) async {
+    final uri = Uri.parse("$_base/ai/analyze");
+
+    final body = {
+      "text": text,
+      "imageUrls": imageUrls,
+      "imageBase64DataUrl": imageBase64DataUrl,
+      "audioTranscript": audioTranscript,
+      "userContext": userContext,
+    };
+
+    final res = await http.post(
+      uri,
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode(body),
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception("Backend AI analyze error: ${res.statusCode} ${res.body}");
+    }
+
+    return jsonDecode(res.body) as Map<String, dynamic>;
   }
 }

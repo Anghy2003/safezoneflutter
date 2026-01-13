@@ -1,14 +1,121 @@
+// lib/screens/create_community_screen.dart
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../routes/app_routes.dart';
+import '../service/auth_service.dart';
 import '../service/cloudinary_service.dart';
+import '../config/api_config.dart';
+
+// ✅ OFFLINE (cola simple local con SharedPreferences)
+class OfflineCommunityRequest {
+  final String clientGeneratedId;
+  final String nombre;
+  final String direccion;
+  final int usuarioId;
+  final double lat;
+  final double lng;
+  final double radio;
+  final String localImagePath;
+  final int createdAtMillis;
+
+  OfflineCommunityRequest({
+    required this.clientGeneratedId,
+    required this.nombre,
+    required this.direccion,
+    required this.usuarioId,
+    required this.lat,
+    required this.lng,
+    required this.radio,
+    required this.localImagePath,
+    required this.createdAtMillis,
+  });
+
+  Map<String, dynamic> toJson() => {
+        "clientGeneratedId": clientGeneratedId,
+        "nombre": nombre,
+        "direccion": direccion,
+        "usuarioId": usuarioId,
+        "lat": lat,
+        "lng": lng,
+        "radio": radio,
+        "localImagePath": localImagePath,
+        "createdAtMillis": createdAtMillis,
+      };
+
+  static OfflineCommunityRequest fromJson(Map<String, dynamic> j) {
+    return OfflineCommunityRequest(
+      clientGeneratedId: (j["clientGeneratedId"] ?? "").toString(),
+      nombre: (j["nombre"] ?? "").toString(),
+      direccion: (j["direccion"] ?? "").toString(),
+      usuarioId: (j["usuarioId"] as num).toInt(),
+      lat: (j["lat"] as num).toDouble(),
+      lng: (j["lng"] as num).toDouble(),
+      radio: (j["radio"] as num).toDouble(),
+      localImagePath: (j["localImagePath"] ?? "").toString(),
+      createdAtMillis: (j["createdAtMillis"] as num).toInt(),
+    );
+  }
+}
+
+class OfflineCommunityQueue {
+  static const _kKey = "offlineCommunityRequests";
+
+  Future<List<OfflineCommunityRequest>> list() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(_kKey) ?? const [];
+    final out = <OfflineCommunityRequest>[];
+
+    for (final s in raw) {
+      try {
+        final decoded = jsonDecode(s);
+        if (decoded is Map<String, dynamic>) {
+          out.add(OfflineCommunityRequest.fromJson(decoded));
+        } else if (decoded is Map) {
+          out.add(OfflineCommunityRequest.fromJson(decoded.cast<String, dynamic>()));
+        }
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  Future<int> count() async => (await list()).length;
+
+  Future<void> enqueue(OfflineCommunityRequest req) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(_kKey) ?? <String>[];
+    raw.add(jsonEncode(req.toJson()));
+    await prefs.setStringList(_kKey, raw);
+  }
+
+  Future<void> removeByClientId(String clientId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getStringList(_kKey) ?? <String>[];
+
+    raw.removeWhere((s) {
+      try {
+        final j = jsonDecode(s);
+        if (j is Map) {
+          return (j["clientGeneratedId"] ?? "").toString() == clientId;
+        }
+        return false;
+      } catch (_) {
+        return false;
+      }
+    });
+
+    await prefs.setStringList(_kKey, raw);
+  }
+}
 
 class CreateCommunityScreen extends StatefulWidget {
   const CreateCommunityScreen({super.key});
@@ -27,21 +134,21 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
 
   bool _isLoading = false;
 
-  // ✅ Foto referencial
   File? _imageFile;
 
-  // ✅ Ubicación
   double? _lat;
   double? _lng;
 
-  // ✅ Radio alto (km)
   double _radio = 5.0;
-
-  static const String _baseUrl = 'http://192.168.3.25:8080';
 
   late final AnimationController _cardController;
   late final Animation<double> _cardOpacity;
   late final Animation<Offset> _cardOffset;
+
+  StreamSubscription<List<ConnectivityResult>>? _connSub;
+  bool _isOnline = true;
+
+  final OfflineCommunityQueue _offlineQueue = OfflineCommunityQueue();
 
   @override
   void initState() {
@@ -70,13 +177,27 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     );
 
     _cardController.forward();
-
-    // ✅ Opcional: intenta obtener ubicación al abrir
     _tryGetLocation();
+
+    Future.microtask(() async {
+      final r = await Connectivity().checkConnectivity();
+      if (mounted) setState(() => _isOnline = _isConnected(r));
+
+      _connSub = Connectivity().onConnectivityChanged.listen((res) async {
+        final online = _isConnected(res);
+        if (!mounted) return;
+        setState(() => _isOnline = online);
+
+        if (online) {
+          await _syncOfflineQueueSilently();
+        }
+      });
+    });
   }
 
   @override
   void dispose() {
+    _connSub?.cancel();
     nombreController.dispose();
     direccionController.dispose();
     referenciaController.dispose();
@@ -84,16 +205,98 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     super.dispose();
   }
 
+  bool get _isNightMode => Theme.of(context).brightness == Brightness.dark;
+
+  bool _isConnected(List<ConnectivityResult> results) {
+    if (results.isEmpty) return false;
+    if (results.contains(ConnectivityResult.none)) return false;
+    return true;
+  }
+
+  Future<bool> _hasInternetNow() async {
+    final r = await Connectivity().checkConnectivity();
+    return _isConnected(r);
+  }
+
+  Future<String?> _persistToOfflineMedia(String path, String prefix) async {
+    try {
+      final f = File(path);
+      if (!f.existsSync()) return null;
+
+      final dir = await getApplicationDocumentsDirectory();
+      final offlineDir = Directory("${dir.path}/offline_media");
+      if (!offlineDir.existsSync()) offlineDir.createSync(recursive: true);
+
+      final ext = path.contains('.') ? path.split('.').last : '';
+      final out =
+          "${offlineDir.path}/$prefix${DateTime.now().millisecondsSinceEpoch}${ext.isEmpty ? '' : '.$ext'}";
+
+      await f.copy(out);
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _syncOfflineQueueSilently() async {
+    try {
+      if (!await _hasInternetNow()) return;
+
+      await AuthService.restoreSession();
+
+      final items = await _offlineQueue.list();
+      if (items.isEmpty) return;
+
+      for (final req in items) {
+        final imgFile = File(req.localImagePath);
+        if (!imgFile.existsSync()) {
+          await _offlineQueue.removeByClientId(req.clientGeneratedId);
+          continue;
+        }
+
+        final fotoUrl = await CloudinaryService.uploadImage(imgFile);
+        if (fotoUrl == null) continue;
+
+        final url = Uri.parse('${ApiConfig.baseUrl}/comunidades/solicitar');
+
+        final body = jsonEncode({
+          "nombre": req.nombre,
+          "direccion": req.direccion,
+          "usuarioId": req.usuarioId,
+          "lat": req.lat,
+          "lng": req.lng,
+          "radio": req.radio,
+          "fotoUrl": fotoUrl,
+          "clientGeneratedId": req.clientGeneratedId,
+          "canalEnvio": "OFFLINE_QUEUE",
+        });
+
+        final response = await http.post(
+          url,
+          headers: {
+            ...AuthService.headers,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: body,
+        );
+
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          await _offlineQueue.removeByClientId(req.clientGeneratedId);
+          try {
+            await imgFile.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
     final bool keyboardOpen = media.viewInsets.bottom > 0;
+    final bool isNightMode = _isNightMode;
 
-    // ⏰ MODO NOCHE: 19:00–06:00
-    final hour = DateTime.now().hour;
-    final bool isNightMode = hour >= 19 || hour < 6;
-
-    // 🎨 PALETA DINÁMICA
     final Color bgColor =
         isNightMode ? const Color(0xFF05070A) : const Color(0xFFF3F4F6);
     final Color cardColor =
@@ -104,8 +307,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
         isNightMode ? const Color(0xFF9CA3AF) : const Color(0xFF6B7280);
     final Color mutedText =
         isNightMode ? const Color(0xFF6B7280) : const Color(0xFF9CA3AF);
-    final Color headerIconColor =
-        isNightMode ? const Color(0xFFF9FAFB) : const Color(0xFF111827);
+    final Color headerIconColor = primaryText;
     final Color headerMuteIconColor =
         isNightMode ? const Color(0xFF6B7280) : const Color(0xFF9CA3AF);
     final Color inputFill =
@@ -122,11 +324,9 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
       body: SafeArea(
         child: Column(
           children: [
-            // 🔝 HEADER
             if (!keyboardOpen)
               Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 child: Row(
                   children: [
                     IconButton(
@@ -140,7 +340,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                     Expanded(
                       child: Center(
                         child: Text(
-                          "Crear comunidad",
+                          "Solicitar comunidad",
                           style: TextStyle(
                             color: primaryText,
                             fontSize: 16,
@@ -149,8 +349,47 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                         ),
                       ),
                     ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(999),
+                        color: isNightMode
+                            ? Colors.white.withOpacity(0.07)
+                            : Colors.black.withOpacity(0.05),
+                        border: Border.all(
+                          color: isNightMode
+                              ? Colors.white.withOpacity(0.10)
+                              : Colors.black.withOpacity(0.08),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _isOnline ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+                            size: 14,
+                            color: primaryText,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            _isOnline ? "Online" : "Offline",
+                            style: TextStyle(
+                              color: primaryText,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
                     IconButton(
-                      onPressed: () {},
+                      onPressed: () async {
+                        final c = await _offlineQueue.count();
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text("Solicitudes pendientes en cola: $c")),
+                        );
+                      },
                       icon: Icon(
                         Icons.more_horiz,
                         color: headerMuteIconColor,
@@ -160,7 +399,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                   ],
                 ),
               ),
-
             Expanded(
               child: SingleChildScrollView(
                 padding: EdgeInsets.only(
@@ -169,18 +407,16 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                   bottom: media.viewInsets.bottom > 0 ? 20 : 0,
                 ),
                 child: Column(
-                  mainAxisAlignment: keyboardOpen
-                      ? MainAxisAlignment.start
-                      : MainAxisAlignment.center,
+                  mainAxisAlignment:
+                      keyboardOpen ? MainAxisAlignment.start : MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     const SizedBox(height: 10),
-
                     if (!keyboardOpen)
                       Column(
                         children: [
                           Text(
-                            "Crea la comunidad con tus vecinos",
+                            "Crea tu comunidad con tus vecinos",
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: primaryText,
@@ -190,7 +426,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            "Ahora también pedimos foto y ubicación (centro) para registrar correctamente el radio de cobertura.",
+                            "Incluye foto y ubicación (centro) para registrar correctamente el radio de cobertura.",
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: secondaryText,
@@ -198,20 +434,55 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                               height: 1.4,
                             ),
                           ),
+                          const SizedBox(height: 10),
+                          FutureBuilder<int>(
+                            future: _offlineQueue.count(),
+                            builder: (_, snap) {
+                              final pending = snap.data ?? 0;
+                              if (pending <= 0) return const SizedBox.shrink();
+                              return Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: isNightMode
+                                      ? Colors.orange.withOpacity(0.10)
+                                      : Colors.orange.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: isNightMode
+                                        ? Colors.orange.withOpacity(0.25)
+                                        : Colors.orange.withOpacity(0.30),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.schedule, color: Colors.orange.shade700),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        "Tienes $pending solicitud(es) pendientes. Se enviarán automáticamente al volver el internet.",
+                                        style: TextStyle(
+                                          color: primaryText,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w700,
+                                          height: 1.2,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                           const SizedBox(height: 22),
                         ],
                       ),
-
-                    // 🧊 CARD FORM animada
                     AnimatedBuilder(
                       animation: _cardController,
                       builder: (context, child) {
                         return Opacity(
                           opacity: _cardOpacity.value,
-                          child: SlideTransition(
-                            position: _cardOffset,
-                            child: child,
-                          ),
+                          child: SlideTransition(position: _cardOffset, child: child),
                         );
                       },
                       child: Container(
@@ -243,16 +514,12 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                "Incluye foto + ubicación para validar la comunidad.",
-                                style: TextStyle(
-                                  color: mutedText,
-                                  fontSize: 12,
-                                ),
+                                "La comunidad quedará SOLICITADA hasta que el super admin la apruebe.",
+                                style: TextStyle(color: mutedText, fontSize: 12),
                               ),
-
                               const SizedBox(height: 18),
 
-                              // ✅ FOTO REFERENCIAL (como RegisterScreen)
+                              // FOTO
                               Text(
                                 "Foto referencial *",
                                 style: TextStyle(
@@ -279,13 +546,11 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                         height: 52,
                                         width: 52,
                                         decoration: BoxDecoration(
-                                          borderRadius:
-                                              BorderRadius.circular(12),
+                                          borderRadius: BorderRadius.circular(12),
                                           color: const Color(0xFFF3F4F6),
                                           image: _imageFile != null
                                               ? DecorationImage(
-                                                  image:
-                                                      FileImage(_imageFile!),
+                                                  image: FileImage(_imageFile!),
                                                   fit: BoxFit.cover,
                                                 )
                                               : null,
@@ -303,14 +568,10 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                           _imageFile == null
                                               ? "Toca para subir una foto"
                                               : "Foto seleccionada",
-                                          style: TextStyle(
-                                            color: primaryText,
-                                            fontSize: 13,
-                                          ),
+                                          style: TextStyle(color: primaryText, fontSize: 13),
                                         ),
                                       ),
-                                      const Icon(Icons.upload_rounded,
-                                          color: Color(0xFF9CA3AF)),
+                                      const Icon(Icons.upload_rounded, color: Color(0xFF9CA3AF)),
                                     ],
                                   ),
                                 ),
@@ -318,7 +579,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
 
                               const SizedBox(height: 16),
 
-                              // Nombre comunidad
+                              // NOMBRE
                               Text(
                                 "Nombre de la comunidad *",
                                 style: TextStyle(
@@ -333,8 +594,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                               TextFormField(
                                 controller: nombreController,
                                 validator: (value) {
-                                  if (value == null ||
-                                      value.trim().isEmpty) {
+                                  if (value == null || value.trim().isEmpty) {
                                     return "Ingresa el nombre de la comunidad";
                                   }
                                   return null;
@@ -343,7 +603,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                 decoration: _inputDecoration(
                                   hint: "Ej. Conjunto Los Rosales",
                                   icon: Icons.home_work_outlined,
-                                  isNightMode: isNightMode,
                                   inputFill: inputFill,
                                   inputBorder: inputBorder,
                                 ),
@@ -351,7 +610,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
 
                               const SizedBox(height: 16),
 
-                              // Dirección
+                              // DIRECCIÓN
                               Text(
                                 "Dirección *",
                                 style: TextStyle(
@@ -366,8 +625,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                               TextFormField(
                                 controller: direccionController,
                                 validator: (value) {
-                                  if (value == null ||
-                                      value.trim().isEmpty) {
+                                  if (value == null || value.trim().isEmpty) {
                                     return "Ingresa la dirección de la comunidad";
                                   }
                                   return null;
@@ -376,7 +634,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                 decoration: _inputDecoration(
                                   hint: "Calle, número, barrio…",
                                   icon: Icons.place_outlined,
-                                  isNightMode: isNightMode,
                                   inputFill: inputFill,
                                   inputBorder: inputBorder,
                                 ),
@@ -384,7 +641,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
 
                               const SizedBox(height: 16),
 
-                              // Referencia
+                              // REFERENCIA
                               Text(
                                 "Referencia / zona (opcional)",
                                 style: TextStyle(
@@ -401,10 +658,8 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                 style: TextStyle(color: primaryText),
                                 maxLines: 2,
                                 decoration: _inputDecoration(
-                                  hint:
-                                      "Ej. Cerca del parque central, junto a la iglesia…",
+                                  hint: "Ej. Cerca del parque central…",
                                   icon: Icons.map_outlined,
-                                  isNightMode: isNightMode,
                                   inputFill: inputFill,
                                   inputBorder: inputBorder,
                                 ),
@@ -412,7 +667,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
 
                               const SizedBox(height: 16),
 
-                              // ✅ UBICACIÓN
+                              // UBICACIÓN
                               Text(
                                 "Ubicación (centro) *",
                                 style: TextStyle(
@@ -433,20 +688,14 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                 ),
                                 child: Row(
                                   children: [
-                                    const Icon(
-                                      Icons.my_location,
-                                      color: Color(0xFF9CA3AF),
-                                    ),
+                                    const Icon(Icons.my_location, color: Color(0xFF9CA3AF)),
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
                                         (_lat != null && _lng != null)
                                             ? "Lat: ${_lat!.toStringAsFixed(6)}  Lng: ${_lng!.toStringAsFixed(6)}"
                                             : "Sin ubicación. Toca 'Obtener'",
-                                        style: TextStyle(
-                                          color: primaryText,
-                                          fontSize: 13,
-                                        ),
+                                        style: TextStyle(color: primaryText, fontSize: 13),
                                       ),
                                     ),
                                     TextButton(
@@ -459,7 +708,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
 
                               const SizedBox(height: 16),
 
-                              // ✅ RADIO ALTO
+                              // RADIO
                               Text(
                                 "Radio de cobertura (km) *",
                                 style: TextStyle(
@@ -471,13 +720,8 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              Text(
-                                "Sugerido para pruebas: 5–10 km.",
-                                style: TextStyle(
-                                  color: mutedText,
-                                  fontSize: 12,
-                                ),
-                              ),
+                              Text("Sugerido: 5–10 km.",
+                                  style: TextStyle(color: mutedText, fontSize: 12)),
                               Slider(
                                 value: _radio,
                                 min: 1,
@@ -492,13 +736,15 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                               _AnimatedPrimaryButton(
                                 isLoading: _isLoading,
                                 onTap: _isLoading ? null : _handleSendRequest,
-                                label: "Enviar solicitud",
+                                label: _isOnline ? "Enviar solicitud" : "Guardar y enviar luego",
                               ),
 
                               const SizedBox(height: 14),
 
                               Text(
-                                "Un administrador revisará los datos. Cuando la comunidad sea aprobada, recibirás tu código de acceso para compartirlo con tus vecinos.",
+                                _isOnline
+                                    ? "Un super admin revisará tu solicitud. Cuando sea aprobada, la comunidad pasará a ACTIVA y tú serás admin de esa comunidad."
+                                    : "Estás sin internet. Guardaremos esta solicitud y se enviará automáticamente cuando vuelva la conexión.",
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   color: secondaryText,
@@ -511,7 +757,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 26),
                   ],
                 ),
@@ -523,7 +768,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     );
   }
 
-  // ✅ Igual que tu RegisterScreen: Galería / Cámara
   Future<void> _pickImage() async {
     final ImagePicker picker = ImagePicker();
 
@@ -543,9 +787,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                   maxHeight: 1280,
                   imageQuality: 80,
                 );
-                if (image != null) {
-                  setState(() => _imageFile = File(image.path));
-                }
+                if (image != null) setState(() => _imageFile = File(image.path));
               },
             ),
             ListTile(
@@ -559,9 +801,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
                   maxHeight: 1280,
                   imageQuality: 80,
                 );
-                if (image != null) {
-                  setState(() => _imageFile = File(image.path));
-                }
+                if (image != null) setState(() => _imageFile = File(image.path));
               },
             ),
           ],
@@ -570,7 +810,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     );
   }
 
-  // ✅ Ubicación con Geolocator
   Future<void> _tryGetLocation() async {
     try {
       final enabled = await Geolocator.isLocationServiceEnabled();
@@ -613,11 +852,9 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     }
   }
 
-  // 🔹 Input decoration base (igual que Login)
   InputDecoration _inputDecoration({
     required String hint,
     IconData? icon,
-    required bool isNightMode,
     required Color inputFill,
     required Color inputBorder,
   }) {
@@ -627,9 +864,7 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
       filled: true,
       fillColor: inputFill,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      prefixIcon: icon != null
-          ? Icon(icon, size: 20, color: const Color(0xFF9CA3AF))
-          : null,
+      prefixIcon: icon != null ? Icon(icon, size: 20, color: const Color(0xFF9CA3AF)) : null,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide: BorderSide(color: inputBorder),
@@ -648,7 +883,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
   Future<void> _handleSendRequest() async {
     if (!_formKey.currentState!.validate()) return;
 
-    // ✅ Validar foto y ubicación
     if (_imageFile == null) {
       _showError("Por favor sube una foto referencial.");
       return;
@@ -661,6 +895,8 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     setState(() => _isLoading = true);
 
     try {
+      await AuthService.restoreSession();
+
       final prefs = await SharedPreferences.getInstance();
       final userId = prefs.getInt('userId');
 
@@ -669,19 +905,80 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
         return;
       }
 
-      // 1) Subir foto a Cloudinary (igual que registro)
+      String direccionFinal = direccionController.text.trim();
+      if (referenciaController.text.trim().isNotEmpty) {
+        direccionFinal += " (${referenciaController.text.trim()})";
+      }
+
+      // ✅ OFFLINE: guardar y salir
+      if (!await _hasInternetNow()) {
+        final local = await _persistToOfflineMedia(_imageFile!.path, "community_");
+        if (local == null) {
+          _showError("No se pudo guardar la foto localmente.");
+          return;
+        }
+
+        final clientId = "COMM_${DateTime.now().millisecondsSinceEpoch}_$userId";
+        final req = OfflineCommunityRequest(
+          clientGeneratedId: clientId,
+          nombre: nombreController.text.trim(),
+          direccion: direccionFinal,
+          usuarioId: userId,
+          lat: _lat!,
+          lng: _lng!,
+          radio: _radio,
+          localImagePath: local,
+          createdAtMillis: DateTime.now().millisecondsSinceEpoch,
+        );
+
+        await _offlineQueue.enqueue(req);
+
+        if (!mounted) return;
+        final c = await _offlineQueue.count();
+
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            title: Row(
+              children: [
+                Icon(Icons.wifi_off, color: Colors.orange.shade700, size: 26),
+                const SizedBox(width: 10),
+                const Expanded(child: Text("Guardado sin internet")),
+              ],
+            ),
+            content: Text(
+              "Tu solicitud se guardó en el teléfono y se enviará automáticamente cuando vuelva el internet.\n\n"
+              "Pendientes en cola: $c",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  AppRoutes.goBack(context);
+                },
+                child: const Text("Entendido"),
+              ),
+            ],
+          ),
+        );
+
+        nombreController.clear();
+        direccionController.clear();
+        referenciaController.clear();
+        setState(() => _imageFile = null);
+        return;
+      }
+
+      // ✅ ONLINE: subir foto + post backend
       final fotoUrl = await CloudinaryService.uploadImage(_imageFile!);
       if (fotoUrl == null) {
         _showError("No se pudo subir la foto. Inténtalo de nuevo.");
         return;
       }
 
-      final url = Uri.parse('$_baseUrl/api/comunidades/solicitar');
-
-      String direccionFinal = direccionController.text.trim();
-      if (referenciaController.text.trim().isNotEmpty) {
-        direccionFinal += " (${referenciaController.text.trim()})";
-      }
+      final url = Uri.parse('${ApiConfig.baseUrl}/comunidades/solicitar');
+      final clientId = "COMM_${DateTime.now().millisecondsSinceEpoch}_$userId";
 
       final body = jsonEncode({
         "nombre": nombreController.text.trim(),
@@ -689,31 +986,39 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
         "usuarioId": userId,
         "lat": _lat,
         "lng": _lng,
-        "radio": _radio,    // ✅ radio alto
-        "fotoUrl": fotoUrl, // ✅ foto
+        "radio": _radio,
+        "fotoUrl": fotoUrl,
+        "clientGeneratedId": clientId,
+        "canalEnvio": "ONLINE",
       });
 
       final response = await http.post(
         url,
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          ...AuthService.headers,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: body,
       );
 
       if (!mounted) return;
 
       if (response.statusCode == 201 || response.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Solicitud enviada. El administrador revisará tu comunidad."),
-          ),
-        );
-        AppRoutes.navigateTo(context, AppRoutes.verifySuccess);
+        await _showRequestSentDialog();
+        // limpiar form
+        nombreController.clear();
+        direccionController.clear();
+        referenciaController.clear();
+        setState(() => _imageFile = null);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("No se pudo enviar (código ${response.statusCode})."),
-          ),
-        );
+        final msg = _tryExtractMessage(response.body) ??
+            "No se pudo enviar (código ${response.statusCode}).";
+        _showError(msg);
+      }
+    } on SocketException catch (_) {
+      if (mounted) {
+        _showError("Se perdió la conexión. Si estás sin internet, se guardará para enviar luego.");
       }
     } catch (_) {
       if (!mounted) return;
@@ -721,6 +1026,57 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  String? _tryExtractMessage(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['message'] != null) {
+        return decoded['message'].toString();
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _showRequestSentDialog() async {
+    final bool night = _isNightMode;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: night ? const Color(0xFF0B1016) : Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle_outline, color: Color(0xFFE53935)),
+              SizedBox(width: 10),
+              Expanded(child: Text("Solicitud enviada")),
+            ],
+          ),
+          content: const Text(
+            "Tu comunidad quedó SOLICITADA.\n\n"
+            "El super admin la revisará. Cuando sea aprobada, la comunidad pasará a ACTIVA y tú serás administrador de esa comunidad.\n\n"
+            "Te llegará una notificación cuando esté aprobada.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                AppRoutes.goBack(context);
+              },
+              child: const Text(
+                "Aceptar",
+                style: TextStyle(color: Color(0xFFE53935), fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _showError(String message) {
@@ -743,7 +1099,6 @@ class _CreateCommunityScreenState extends State<CreateCommunityScreen>
   }
 }
 
-/// 🔴 Botón rojo animado (igual al tuyo)
 class _AnimatedPrimaryButton extends StatefulWidget {
   final bool isLoading;
   final VoidCallback? onTap;
@@ -800,8 +1155,7 @@ class _AnimatedPrimaryButtonState extends State<_AnimatedPrimaryButton>
       onTap: widget.onTap,
       child: AnimatedBuilder(
         animation: _pressController,
-        builder: (context, child) =>
-            Transform.scale(scale: _scale.value, child: child),
+        builder: (context, child) => Transform.scale(scale: _scale.value, child: child),
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 14),

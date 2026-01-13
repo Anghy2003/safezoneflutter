@@ -1,48 +1,35 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.safezone_app">
 
-    <!-- 🌐 INTERNET -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 📍 UBICACIÓN (geolocator / mapas SafeZone) -->
+    <!-- Ubicación -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- 🎥 CÁMARA (image_picker) -->
     <uses-permission android:name="android.permission.CAMERA" />
-
-    <!-- 🎙 MICRÓFONO (record) 👉 FALTABA -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- 🔔 NOTIFICACIONES (Android 13+) 👉 FALTABA para Firebase Messaging -->
+    <!-- Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- 💾 ALMACENAMIENTO (opcionales / puedes quitarlos si no los usas directo) -->
-    <!--
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    -->
-
-    <!-- 🔥 SERVICIO EN 1ER PLANO (SOS / ubicación) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-
-    <!-- 📳 VIBRACIÓN PARA ALERTAS -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- 💤 EVITAR QUE EL TELÉFONO DUERMA DURANTE ALERTAS -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- SMS -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- ayuda en algunos OEM / multiSIM -->
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
 
-    <!-- 🔁 INICIAR SERVICIOS DESPUÉS DE REINICIO (si alguna vez lo usas) -->
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- No obligues a tener telefonía (si se instala en tablet) -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <application
         android:label="SafeZone"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
-        <!-- ACTIVIDAD PRINCIPAL -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -63,24 +50,37 @@
             </intent-filter>
         </activity>
 
-        <!-- Flutter engine -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- 🚨 Servicio SOS en 1er plano -->
         <service
-            android:name=".VolumeService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
+            android:name=".QuickSosTileService"
+            android:label="SOS SafeZone"
+            android:icon="@mipmap/ic_launcher"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
     </application>
 
-    <!-- 👇 Permite consultar ciertas intents externas (no es obligatorio tocar esto) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
+        </intent>
+
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="sms" />
+        </intent>
+
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 

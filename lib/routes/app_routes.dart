@@ -1,43 +1,108 @@
+// lib/routes/app_routes.dart
 import 'package:flutter/material.dart';
 
-// 👇 IMPORTA TU SPLASH
-import 'package:safezone_app/screens/SplashScreen.dart';
+import 'package:safezone_app/controllers/theme_controller.dart';
+import 'package:safezone_app/service/theme_pref_service.dart';
 
+import 'package:safezone_app/screens/SplashScreen.dart';
 import 'package:safezone_app/screens/WelcomeScreen.dart';
+
 import '../screens/login_screen.dart';
 import '../screens/register_screen.dart';
-import '../screens/verify_community_screen.dart';
-import '../screens/verify_success_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/contacts_screen.dart';
 import '../screens/explore/explore_screen.dart';
 import '../screens/profile_screen.dart';
-import '../screens/emergency_report_screen.dart';
 import '../screens/community_screen.dart';
 import '../screens/create_community_screen.dart';
 
+import '../screens/community_picker_screen.dart';
+import '../screens/admin_panel_screen.dart';
+import '../screens/admin_requests_screen.dart';
+
+import '../screens/my_communities_screen.dart';
+import '../screens/request_join_community_screen.dart';
+
+// ✅ Menú completo
+import '../screens/safezone_menu_screen.dart';
+
+// ✅ Notificaciones
+import '../screens/notifications_screen.dart';
+
+// ✅ NUEVO: Políticas de uso + Penalización
+import '../screens/usage_policies_screen.dart';
+import '../screens/penalized_screen.dart';
+
 class AppRoutes {
-  // 👇 Asegura que splash sea la ruta raíz
+  // ---------------- Core / Arranque ----------------
   static const String splash = '/';
+  static const String welcome = '/welcome';
+
+  // ✅ NUEVO: Gate de políticas y penalización
+  static const String policies = '/policies';
+  static const String penalized = '/penalized';
+
+  // ---------------- Auth ----------------
   static const String login = '/login';
   static const String register = '/register';
-  static const String verifyCommunity = '/verify-community';
-  static const String verifySuccess = '/verify-success';
+
+  // ---------------- Menú (pantalla completa) ----------------
+  static const String menu = '/menu';
+
+  // ---------------- Navegación principal ----------------
   static const String home = '/home';
   static const String contacts = '/contacts';
   static const String explore = '/explore';
   static const String profile = '/profile';
+
+  // ---------------- Comunidades ----------------
   static const String community = '/community';
   static const String createCommunity = '/create-community';
-  static const String welcome = '/welcome';
+
+  static const String communityPicker = '/community-picker';
+  static const String requestJoinCommunity = '/request-join-community';
+  static const String myCommunities = '/my-communities';
+
+  // ✅ Admin de comunidad: SOLO solicitudes
+  static const String communityAdminRequests = '/community-admin-requests';
+
+  // ---------------- Admin global ----------------
+  static const String admin = '/admin';
+
+  // ✅ Notificaciones
+  static const String notifications = '/notifications';
+
+  static late ThemeController themeController;
+
+  static Future<void> init() async {
+    final tc = ThemeController(ThemePrefService());
+    await tc.load();
+    themeController = tc;
+  }
 
   static Route<dynamic> generateRoute(RouteSettings settings) {
-    Widget page;
+    final args = settings.arguments;
+    final Map a = (args is Map) ? args : const {};
+
+    late final Widget page;
 
     switch (settings.name) {
-      // 🔥 NUEVO: Splash
       case splash:
         page = const SplashScreen();
+        break;
+
+      // ✅ NUEVO: Pantalla políticas
+      case policies:
+        page = const UsagePoliciesScreen();
+        break;
+
+      // ✅ NUEVO: Pantalla penalización
+      case penalized:
+        page = const PenalizedScreen();
+        break;
+
+      case welcome:
+        page = const WelcomeScreen();
         break;
 
       case login:
@@ -48,12 +113,18 @@ class AppRoutes {
         page = const RegisterScreen();
         break;
 
-      case verifyCommunity:
-        page = const VerifyCommunityScreen();
-        break;
-
-      case verifySuccess:
-        page = const VerifySuccessScreen();
+      // ✅ Menú completo
+      case menu:
+        page = Builder(
+          builder: (context) {
+            final night = Theme.of(context).brightness == Brightness.dark;
+            return SafeZoneMenuScreen(
+              night: night,
+              photoUrl: a["photoUrl"] as String?,
+              displayName: a["displayName"] as String?,
+            );
+          },
+        );
         break;
 
       case home:
@@ -69,7 +140,20 @@ class AppRoutes {
         break;
 
       case profile:
-        page = const ProfileScreen();
+        page = ProfileScreen(themeController: themeController);
+        break;
+
+      // ---------------- Comunidades ----------------
+      case communityPicker:
+        page = const CommunityPickerScreen();
+        break;
+
+      case requestJoinCommunity:
+        page = const RequestJoinCommunityScreen();
+        break;
+
+      case myCommunities:
+        page = const MyCommunitiesScreen();
         break;
 
       case community:
@@ -80,11 +164,29 @@ class AppRoutes {
         page = const CreateCommunityScreen();
         break;
 
-      case welcome:
-        page = const WelcomeScreen();
+      // ---------------- Admin ----------------
+      case admin:
+        page = const AdminPanelScreen();
         break;
 
-      // ⛔ DEFAULT → Splash
+      case communityAdminRequests:
+        page = const AdminRequestsScreen();
+        break;
+
+      // ✅ Notificaciones (requiere comunidadId)
+      case notifications:
+        final int comunidadId = (a["comunidadId"] is num)
+            ? (a["comunidadId"] as num).toInt()
+            : 0;
+
+        // Si llega mal, manda al picker (evita crash)
+        if (comunidadId <= 0) {
+          page = const CommunityPickerScreen();
+        } else {
+          page = NotificationsScreen(comunidadId: comunidadId);
+        }
+        break;
+
       default:
         page = const SplashScreen();
     }
@@ -99,44 +201,21 @@ class AppRoutes {
     );
   }
 
-  static void navigateTo(
-    BuildContext context,
-    String routeName, {
-    Object? arguments,
-  }) {
-    Navigator.pushNamed(
-      context,
-      routeName,
-      arguments: arguments,
-    );
+  static void navigateTo(BuildContext context, String routeName,
+      {Object? arguments}) {
+    Navigator.pushNamed(context, routeName, arguments: arguments);
   }
 
-  static void navigateAndReplace(
-    BuildContext context,
-    String routeName, {
-    Object? arguments,
-  }) {
-    Navigator.pushReplacementNamed(
-      context,
-      routeName,
-      arguments: arguments,
-    );
+  static void navigateAndReplace(BuildContext context, String routeName,
+      {Object? arguments}) {
+    Navigator.pushReplacementNamed(context, routeName, arguments: arguments);
   }
 
-  static void navigateAndClearStack(
-    BuildContext context,
-    String routeName, {
-    Object? arguments,
-  }) {
-    Navigator.pushNamedAndRemoveUntil(
-      context,
-      routeName,
-      (route) => false,
-      arguments: arguments,
-    );
+  static void navigateAndClearStack(BuildContext context, String routeName,
+      {Object? arguments}) {
+    Navigator.pushNamedAndRemoveUntil(context, routeName, (route) => false,
+        arguments: arguments);
   }
 
-  static void goBack(BuildContext context) {
-    Navigator.pop(context);
-  }
+  static void goBack(BuildContext context) => Navigator.pop(context);
 }

@@ -8,44 +8,45 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
-    // MISMO canal que en Flutter y VolumeService
+    companion object {
+        const val EXTRA_OPEN_QUICK_SOS = "openQuickSos"
+    }
+
     private val CHANNEL = "safezone/background_sos"
+    private var channel: MethodChannel? = null
 
-    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            CHANNEL
-        ).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "startVolumeService" -> {
-                    startVolumeService()
-                    result.success(null)
-                }
-                "stopVolumeService" -> {
-                    stopVolumeService()
-                    result.success(null)
-                }
-                else -> result.notImplemented()
-            }
-        }
-    }
-
-    private fun startVolumeService() {
-        val intent = Intent(this, VolumeService::class.java)
-
-        // ✅ Ya NO usamos startForegroundService
-        startService(intent)
-    }
-
-    private fun stopVolumeService() {
-        val intent = Intent(this, VolumeService::class.java)
-        stopService(intent)
-    }
+    // ✅ Si el intent llega antes de que el channel exista, lo guardamos aquí
+    private var pendingOpenQuickSos: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Aquí luego puedes leer extras como "open_sos" si quieres
+        pendingOpenQuickSos = intent?.getBooleanExtra(EXTRA_OPEN_QUICK_SOS, false) ?: false
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+
+        // ✅ Ahora sí: el channel existe, entonces disparamos si estaba pendiente
+        maybeOpenQuickSos()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingOpenQuickSos = intent.getBooleanExtra(EXTRA_OPEN_QUICK_SOS, false)
+
+        // ✅ Si ya está listo el channel, abre el modal
+        maybeOpenQuickSos()
+    }
+
+    private fun maybeOpenQuickSos() {
+        if (!pendingOpenQuickSos) return
+        pendingOpenQuickSos = false
+
+        // Limpia el extra para no repetir en futuros resumes
+        intent?.removeExtra(EXTRA_OPEN_QUICK_SOS)
+
+        channel?.invokeMethod("openQuickSos", null)
     }
 }

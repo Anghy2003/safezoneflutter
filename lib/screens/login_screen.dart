@@ -1,13 +1,13 @@
 // lib/screens/login_screen.dart
+import 'dart:async';
 import 'dart:developer' as dev show log;
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 
 import '../routes/app_routes.dart';
 import '../service/auth_service.dart';
@@ -22,7 +22,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen>
     with SingleTickerProviderStateMixin {
-  final TextEditingController cedulaController = TextEditingController(); // email
+  final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
 
   bool obscurePassword = true;
@@ -33,6 +33,13 @@ class _LoginScreenState extends State<LoginScreen>
   late final Animation<double> _logoScale;
   late final Animation<double> _cardOpacity;
   late final Animation<Offset> _cardOffset;
+
+  static const String _serverClientId =
+      "148831363300-1gmm6f3rls7pflfmk6dp6jm5cd601tqb.apps.googleusercontent.com";
+
+  bool _isOnline = true;
+  Timer? _netTimer;
+  bool _netCheckRunning = false;
 
   @override
   void initState() {
@@ -68,23 +75,99 @@ class _LoginScreenState extends State<LoginScreen>
     );
 
     _controller.forward();
+
+    _startInternetWatcher();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _autoRedirectIfSession();
+    });
   }
 
   @override
   void dispose() {
-    cedulaController.dispose();
+    emailController.dispose();
     passwordController.dispose();
     _controller.dispose();
+    _netTimer?.cancel();
     super.dispose();
+  }
+
+  Future<bool> _hasInternet() async {
+    try {
+      final res = await InternetAddress.lookup('example.com')
+          .timeout(const Duration(seconds: 2));
+      return res.isNotEmpty && res.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _startInternetWatcher() {
+    _refreshInternetStatus();
+    _netTimer?.cancel();
+    _netTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _refreshInternetStatus();
+    });
+  }
+
+  Future<void> _refreshInternetStatus() async {
+    if (_netCheckRunning) return;
+    _netCheckRunning = true;
+
+    try {
+      final ok = await _hasInternet();
+      if (!mounted) return;
+
+      if (ok != _isOnline) {
+        setState(() => _isOnline = ok);
+      }
+    } finally {
+      _netCheckRunning = false;
+    }
+  }
+
+  Future<bool> _ensureInternetOrSnack() async {
+    if (!_isOnline) {
+      _showSnack("No hay internet para entrar");
+      return false;
+    }
+
+    final ok = await _hasInternet();
+    if (!mounted) return false;
+
+    if (!ok) {
+      if (_isOnline) setState(() => _isOnline = false);
+      _showSnack("No hay internet para entrar");
+      return false;
+    }
+
+    if (!_isOnline) setState(() => _isOnline = true);
+    return true;
+  }
+
+  Future<void> _autoRedirectIfSession() async {
+    await AuthService.restoreSession();
+
+    if (!mounted) return;
+    if (!AuthService.hasLocalSession) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final communityId = prefs.getInt('communityId');
+
+    if (!mounted) return;
+
+    if (communityId == null) {
+      AppRoutes.navigateAndClearStack(context, AppRoutes.communityPicker);
+    } else {
+      AppRoutes.navigateAndClearStack(context, AppRoutes.home);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
     final bool keyboardOpen = media.viewInsets.bottom > 0;
-
-    final hour = DateTime.now().hour;
-    final bool isNightMode = hour >= 19 || hour < 6;
+    final bool isNightMode = Theme.of(context).brightness == Brightness.dark;
 
     final Color bgColor =
         isNightMode ? const Color(0xFF05070A) : const Color(0xFFF3F4F6);
@@ -96,20 +179,22 @@ class _LoginScreenState extends State<LoginScreen>
         isNightMode ? const Color(0xFF9CA3AF) : const Color(0xFF6B7280);
     final Color mutedText =
         isNightMode ? const Color(0xFF6B7280) : const Color(0xFF9CA3AF);
-    final Color headerIconColor =
-        isNightMode ? const Color(0xFFF9FAFB) : const Color(0xFF111827);
+
+    final Color headerIconColor = primaryText;
     final Color headerMuteIconColor =
         isNightMode ? const Color(0xFF6B7280) : const Color(0xFF9CA3AF);
+
     final Color inputFill =
         isNightMode ? const Color(0xFF111827) : const Color(0xFFF9FAFB);
     final Color inputBorder =
         isNightMode ? const Color(0xFF1F2937) : const Color(0xFFE5E7EB);
+
     final Color separatorColor =
         isNightMode ? const Color(0xFF111827) : const Color(0xFFE5E7EB);
-    final Color googleTextColor =
-        isNightMode ? const Color(0xFFF9FAFB) : const Color(0xFF111827);
-    final Color googleBorderColor =
-        isNightMode ? const Color(0xFF1F2937) : const Color(0xFFE5E7EB);
+
+    final Color googleTextColor = primaryText;
+    final Color googleBorderColor = inputBorder;
+
     final Color cardShadowColor = isNightMode
         ? Colors.black.withOpacity(0.7)
         : Colors.black.withOpacity(0.06);
@@ -120,6 +205,45 @@ class _LoginScreenState extends State<LoginScreen>
       body: SafeArea(
         child: Column(
           children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              height: _isOnline ? 0 : 44,
+              width: double.infinity,
+              child: _isOnline
+                  ? const SizedBox.shrink()
+                  : Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE53935).withOpacity(0.95),
+                        boxShadow: [
+                          BoxShadow(
+                            blurRadius: 10,
+                            offset: const Offset(0, 3),
+                            color: Colors.black.withOpacity(0.12),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: const [
+                          Icon(Icons.wifi_off, color: Colors.white, size: 18),
+                          SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              "Sin conexión. Conéctate a internet para iniciar sesión.",
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
             if (!keyboardOpen)
               Padding(
                 padding:
@@ -227,7 +351,6 @@ class _LoginScreenState extends State<LoginScreen>
                         ),
                       ),
                     const SizedBox(height: 22),
-
                     AnimatedBuilder(
                       animation: _controller,
                       builder: (context, child) {
@@ -273,7 +396,6 @@ class _LoginScreenState extends State<LoginScreen>
                               ),
                             ),
                             const SizedBox(height: 18),
-
                             Text(
                               "Correo electrónico",
                               style: TextStyle(
@@ -286,7 +408,7 @@ class _LoginScreenState extends State<LoginScreen>
                             ),
                             const SizedBox(height: 6),
                             TextField(
-                              controller: cedulaController,
+                              controller: emailController,
                               keyboardType: TextInputType.emailAddress,
                               style: TextStyle(color: primaryText),
                               decoration: _inputDecoration(
@@ -296,9 +418,7 @@ class _LoginScreenState extends State<LoginScreen>
                                 inputBorder: inputBorder,
                               ),
                             ),
-
                             const SizedBox(height: 16),
-
                             Text(
                               "Contraseña",
                               style: TextStyle(
@@ -336,14 +456,13 @@ class _LoginScreenState extends State<LoginScreen>
                                 ),
                               ),
                             ),
-
                             const SizedBox(height: 12),
-
                             Align(
                               alignment: Alignment.centerRight,
                               child: TextButton(
                                 onPressed: () {
-                                  // TODO: recuperar contraseña
+                                  _showSnack(
+                                      "Recuperación de contraseña pendiente");
                                 },
                                 style: TextButton.styleFrom(
                                   padding: EdgeInsets.zero,
@@ -361,24 +480,22 @@ class _LoginScreenState extends State<LoginScreen>
                                 ),
                               ),
                             ),
-
                             const SizedBox(height: 10),
-
                             _AnimatedPrimaryButton(
                               isLoading: _isLoading,
                               onTap: _isLoading ? null : _handleLogin,
                               label: "Iniciar sesión",
                             ),
-
                             const SizedBox(height: 18),
-
                             Row(
                               children: [
                                 Expanded(
-                                  child: Container(height: 1, color: separatorColor),
+                                  child: Container(
+                                      height: 1, color: separatorColor),
                                 ),
                                 Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8.0),
                                   child: Text(
                                     "o continúa con",
                                     style: TextStyle(
@@ -388,18 +505,19 @@ class _LoginScreenState extends State<LoginScreen>
                                   ),
                                 ),
                                 Expanded(
-                                  child: Container(height: 1, color: separatorColor),
+                                  child: Container(
+                                      height: 1, color: separatorColor),
                                 ),
                               ],
                             ),
-
                             const SizedBox(height: 12),
-
                             GestureDetector(
-                              onTap: _isGoogleLoading ? null : _handleGoogleLogin,
+                              onTap:
+                                  _isGoogleLoading ? null : _handleGoogleLogin,
                               child: AnimatedContainer(
                                 duration: const Duration(milliseconds: 150),
-                                padding: const EdgeInsets.symmetric(vertical: 11),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 11),
                                 decoration: BoxDecoration(
                                   color: isNightMode
                                       ? const Color(0xFF111827)
@@ -422,7 +540,8 @@ class _LoginScreenState extends State<LoginScreen>
                                       const SizedBox(
                                         width: 18,
                                         height: 18,
-                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2),
                                       )
                                     else ...[
                                       Image.asset(
@@ -442,9 +561,7 @@ class _LoginScreenState extends State<LoginScreen>
                                 ),
                               ),
                             ),
-
                             const SizedBox(height: 16),
-
                             Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -463,7 +580,6 @@ class _LoginScreenState extends State<LoginScreen>
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 22),
                   ],
                 ),
@@ -505,11 +621,11 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  // ===========================
-  // LOGIN LOCAL (email/password) -> /api/usuarios/login
-  // ===========================
   Future<void> _handleLogin() async {
-    final email = cedulaController.text.trim();
+    final can = await _ensureInternetOrSnack();
+    if (!can) return;
+
+    final email = emailController.text.trim();
     final password = passwordController.text;
 
     if (email.isEmpty) return _showSnack('Por favor ingresa tu correo');
@@ -525,152 +641,157 @@ class _LoginScreenState extends State<LoginScreen>
     if (result['success'] == true) {
       await _afterAuthSuccess(result);
     } else {
-      _showSnack((result['message'] ?? 'Error al iniciar sesión').toString());
+      final msg = (result['message'] ?? 'Error al iniciar sesión').toString();
+      if (msg.toLowerCase().contains('no hay conexión') ||
+          msg.toLowerCase().contains('internet')) {
+        _showSnack("No hay internet para entrar");
+      } else {
+        _showSnack(msg);
+      }
     }
   }
 
-  // ===========================
-  // LOGIN GOOGLE (Firebase) -> /api/usuarios/google-login
-  // ===========================
+  Future<void> _handleGoogleLogin() async {
+    final can = await _ensureInternetOrSnack();
+    if (!can) return;
 
-Future<void> _handleGoogleLogin() async {
-  if (_isGoogleLoading) return;
+    if (_isGoogleLoading) return;
 
-  final swAll = Stopwatch()..start();
-  setState(() => _isGoogleLoading = true);
+    final swAll = Stopwatch()..start();
+    setState(() => _isGoogleLoading = true);
 
-  void L(String msg) => dev.log(msg, name: 'SAFEZONE_GOOGLE');
+    void L(String msg) => dev.log(msg, name: 'SAFEZONE_GOOGLE');
 
-  try {
-    L("STEP 0: start _handleGoogleLogin()");
-
-    // 0) Estado previo
-    final prev = FirebaseAuth.instance.currentUser;
-    L("STEP 0.1: Firebase currentUser BEFORE = ${prev?.uid} email=${prev?.email}");
-
-    // 1) Construir GoogleSignIn con serverClientId (web client id)
-    final googleSignIn = GoogleSignIn(
-      serverClientId:
-          "148831363300-1gmm6f3rls7pflfmk6dp6jm5cd601tqb.apps.googleusercontent.com",
-      scopes: const ["email", "profile", "openid"],
-    );
-    L("STEP 1: GoogleSignIn created (serverClientId set)");
-
-    // 2) SignOut previo por si quedó sesión rara
     try {
-      await googleSignIn.signOut();
-      L("STEP 2: googleSignIn.signOut() OK");
+      L("STEP 0: start _handleGoogleLogin()");
+
+      try {
+        await GoogleSignIn(serverClientId: _serverClientId).signOut();
+      } catch (_) {}
+      try {
+        await FirebaseAuth.instance.signOut();
+      } catch (_) {}
+
+      final googleSignIn = GoogleSignIn(
+        serverClientId: _serverClientId,
+        scopes: const ["email", "profile", "openid"],
+      );
+      L("STEP 1: GoogleSignIn created");
+
+      L("STEP 2: googleSignIn.signIn()...");
+      final swSignIn = Stopwatch()..start();
+      final googleUser = await googleSignIn.signIn();
+      swSignIn.stop();
+
+      if (googleUser == null) {
+        L("STEP 2.1: canceled t=${swSignIn.elapsedMilliseconds}ms");
+        _showSnack("Inicio con Google cancelado");
+        return;
+      }
+
+      L("STEP 2.2: googleUser OK email=${googleUser.email} t=${swSignIn.elapsedMilliseconds}ms");
+
+      L("STEP 3: googleUser.authentication...");
+      final swAuth = Stopwatch()..start();
+      final googleAuth = await googleUser.authentication;
+      swAuth.stop();
+
+      final idToken = googleAuth.idToken;
+      final accessToken = googleAuth.accessToken;
+
+      if (idToken == null || idToken.isEmpty) {
+        L("STEP 3.1: idToken NULL/EMPTY");
+        _showSnack(
+            "Google no devolvió idToken (revisa serverClientId / SHA1 / Play Services)");
+        return;
+      }
+
+      final credential = GoogleAuthProvider.credential(
+        idToken: idToken,
+        accessToken: accessToken,
+      );
+
+      L("STEP 4: FirebaseAuth.signInWithCredential...");
+      final swFb = Stopwatch()..start();
+      UserCredential userCred;
+      try {
+        userCred = await FirebaseAuth.instance.signInWithCredential(credential);
+      } on FirebaseAuthException catch (e) {
+        L("STEP 4.1: FirebaseAuthException code=${e.code} msg=${e.message}");
+        _showSnack(AuthService.mapFirebaseAuthError(e));
+        return;
+      } catch (e) {
+        L("STEP 4.2: Firebase signInWithCredential ERROR: $e");
+        _showSnack("Error Firebase (credential): $e");
+        return;
+      } finally {
+        swFb.stop();
+      }
+
+      final fbUser = userCred.user;
+      L("STEP 4.3: Firebase OK t=${swFb.elapsedMilliseconds}ms uid=${fbUser?.uid} email=${fbUser?.email}");
+
+      L("STEP 5: AuthService.loginWithFirebaseGoogle()...");
+      final swApi = Stopwatch()..start();
+      final result = await AuthService.loginWithFirebaseGoogle();
+      swApi.stop();
+
+      L("STEP 5.1: backend result t=${swApi.elapsedMilliseconds}ms -> $result");
+
+      final msgLower =
+          (result['message'] ?? '').toString().toLowerCase().trim();
+      if (msgLower.contains('no hay conexión') || msgLower.contains('internet')) {
+        _showSnack("No hay internet para entrar");
+        return;
+      }
+
+      if (result['success'] != true && result['registered'] == false) {
+        final email = (result['email'] ?? googleUser.email).toString();
+        final name = (googleUser.displayName ?? '').toString();
+        final picture = (googleUser.photoUrl ?? '').toString();
+
+        _showSnack(result['message']?.toString() ??
+            "Tu correo fue verificado con Google. Completa el registro.");
+
+        if (!mounted) return;
+
+        AppRoutes.navigateTo(
+          context,
+          AppRoutes.register,
+          arguments: {
+            'email': email,
+            'name': name,
+            'picture': picture,
+          },
+        );
+        return;
+      }
+
+      if (result['success'] == true) {
+        L("STEP 6: _afterAuthSuccess()...");
+        await _afterAuthSuccess(result);
+      } else {
+        _showSnack(
+            result['message']?.toString() ?? "Error login Google (backend)");
+      }
     } catch (e) {
-      L("STEP 2: googleSignIn.signOut() ERROR: $e (ignorable)");
-    }
-
-    // 3) Abrir UI de Google
-    L("STEP 3: calling googleSignIn.signIn()...");
-    final swSignIn = Stopwatch()..start();
-    final googleUser = await googleSignIn.signIn();
-    swSignIn.stop();
-
-    if (googleUser == null) {
-      L("STEP 3.1: googleUser == null -> user canceled. t=${swSignIn.elapsedMilliseconds}ms");
-      _showSnack("Inicio con Google cancelado");
-      return;
-    }
-
-    L("STEP 3.2: googleUser OK: email=${googleUser.email} id=${googleUser.id} "
-      "displayName=${googleUser.displayName} t=${swSignIn.elapsedMilliseconds}ms");
-
-    // 4) Tokens Google
-    L("STEP 4: requesting googleUser.authentication ...");
-    final swAuth = Stopwatch()..start();
-    final googleAuth = await googleUser.authentication;
-    swAuth.stop();
-
-    L("STEP 4.1: googleAuth received t=${swAuth.elapsedMilliseconds}ms "
-      "hasIdToken=${googleAuth.idToken != null} hasAccessToken=${googleAuth.accessToken != null}");
-
-    final idToken = googleAuth.idToken;
-    final accessToken = googleAuth.accessToken;
-
-    if (idToken == null || idToken.isEmpty) {
-      L("STEP 4.2: idToken is NULL/EMPTY -> Google did not return idToken. STOP.");
-      _showSnack("Google no devolvió idToken (revisa serverClientId / SHA1 / Play Services)");
-      return;
-    }
-
-    // (No imprimir el token completo por seguridad)
-    L("STEP 4.3: idToken length=${idToken.length} (OK)");
-
-    // 5) Login Firebase con credential
-    final credential = GoogleAuthProvider.credential(
-      idToken: idToken,
-      accessToken: accessToken,
-    );
-
-    L("STEP 5: FirebaseAuth.signInWithCredential() ...");
-    final swFb = Stopwatch()..start();
-    UserCredential userCred;
-    try {
-      userCred = await FirebaseAuth.instance.signInWithCredential(credential);
-    } on FirebaseAuthException catch (e) {
-      L("STEP 5.1: FirebaseAuthException code=${e.code} msg=${e.message}");
-      _showSnack(AuthService.mapFirebaseAuthError(e));
-      return;
-    } catch (e) {
-      L("STEP 5.2: Firebase signInWithCredential unknown ERROR: $e");
-      _showSnack("Error Firebase (credential): $e");
-      return;
+      L("CATCH: unexpected ERROR: $e");
+      final s = e.toString().toLowerCase();
+      if (s.contains('socket') || s.contains('network')) {
+        _showSnack("No hay internet para entrar");
+      } else {
+        _showSnack("Error Google (general): $e");
+      }
     } finally {
-      swFb.stop();
+      swAll.stop();
+      L("FINALLY: total=${swAll.elapsedMilliseconds}ms _isGoogleLoading=false");
+      if (mounted) setState(() => _isGoogleLoading = false);
     }
-
-    final fbUser = userCred.user;
-    L("STEP 5.3: Firebase signIn OK t=${swFb.elapsedMilliseconds}ms uid=${fbUser?.uid} email=${fbUser?.email}");
-
-    // 6) Firebase ID token (el que tu backend debería aceptar)
-    L("STEP 6: requesting Firebase ID token ...");
-    final swId = Stopwatch()..start();
-    final fbIdToken = await fbUser?.getIdToken(true);
-    swId.stop();
-
-    if (fbIdToken == null || fbIdToken.isEmpty) {
-      L("STEP 6.1: Firebase getIdToken returned NULL/EMPTY (bad). t=${swId.elapsedMilliseconds}ms");
-      _showSnack("Firebase no devolvió ID token. Revisa configuración Google Sign-In.");
-      return;
-    }
-
-    L("STEP 6.2: Firebase ID token length=${fbIdToken.length} t=${swId.elapsedMilliseconds}ms");
-
-    // 7) Backend login
-    L("STEP 7: calling AuthService.loginWithFirebaseGoogle() ...");
-    final swApi = Stopwatch()..start();
-    final result = await AuthService.loginWithFirebaseGoogle();
-    swApi.stop();
-
-    L("STEP 7.1: backend result t=${swApi.elapsedMilliseconds}ms -> $result");
-
-    if (result['success'] == true) {
-      L("STEP 8: _afterAuthSuccess() ...");
-      final swAfter = Stopwatch()..start();
-      await _afterAuthSuccess(result);
-      swAfter.stop();
-      L("STEP 8.1: _afterAuthSuccess OK t=${swAfter.elapsedMilliseconds}ms");
-    } else {
-      L("STEP 8.2: backend returned success=false. message=${result['message']}");
-      _showSnack(result['message']?.toString() ?? "Error login Google (backend)");
-    }
-  } catch (e) {
-    L("CATCH: unexpected ERROR: $e");
-    _showSnack("Error Google (general): $e");
-  } finally {
-    swAll.stop();
-    L("FINALLY: total=${swAll.elapsedMilliseconds}ms _isGoogleLoading -> false");
-    if (mounted) setState(() => _isGoogleLoading = false);
   }
-}
 
-  // ===========================
-  // POST LOGIN: prefs + FCM + rutas
-  // ===========================
+  // =========================================================
+  // ✅ Guarda: userId/communityId + userRole/isAdmin + userEmail/communityRole + flags
+  // =========================================================
   Future<void> _afterAuthSuccess(Map<String, dynamic> result) async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -690,7 +811,12 @@ Future<void> _handleGoogleLogin() async {
       return;
     }
 
-    // (Redundante pero ok): AuthService ya guarda userId/communityId internamente
+    dev.log(
+      "LOGIN BACKEND → id=${usuario.id} email=${usuario.email} rol=${usuario.rol} comunidadId=${usuario.comunidadId}",
+      name: "SAFEZONE_DEBUG",
+    );
+
+    // ✅ IDs
     if (usuario.id != null) {
       await prefs.setInt('userId', usuario.id!);
     }
@@ -701,20 +827,46 @@ Future<void> _handleGoogleLogin() async {
       await prefs.remove('communityId');
     }
 
+    // ✅ EMAIL (para SuperAdmin por correo)
+    final email = (usuario.email ?? '').trim();
+    if (email.isNotEmpty) {
+      await prefs.setString('userEmail', email);
+    } else {
+      await prefs.remove('userEmail');
+    }
+
+    // ✅ rol comunidad (para drawer)
+    final communityRole = (usuario.rol ?? 'USER').toUpperCase().trim();
+    await prefs.setString('communityRole', communityRole);
+
+    // ✅ compat: rol actual (tu UI)
+    await prefs.setString('userRole', communityRole);
+    await prefs.setBool('isAdmin', communityRole == 'ADMIN');
+
+    // ✅ flags nuevos (menu/drawer)
+    final isSuperAdmin =
+        email.toLowerCase() == AuthService.superAdminEmail.toLowerCase();
+    final isCommunityAdmin = communityRole == 'ADMIN';
+
+    await prefs.setBool('isSuperAdmin', isSuperAdmin);
+    await prefs.setBool('isCommunityAdmin', isCommunityAdmin);
+
+    dev.log(
+      "PREFS → userEmail=$email communityRole=$communityRole isSuperAdmin=$isSuperAdmin isCommunityAdmin=$isCommunityAdmin",
+      name: "SAFEZONE_DEBUG",
+    );
+
     await _registerFcmToken(userId: usuario.id);
 
     if (!mounted) return;
 
     if (usuario.comunidadId == null) {
-      AppRoutes.navigateAndClearStack(context, AppRoutes.verifyCommunity);
+      AppRoutes.navigateAndClearStack(context, AppRoutes.communityPicker);
     } else {
       AppRoutes.navigateAndClearStack(context, AppRoutes.home);
     }
   }
 
-  // ===========================
-  // FCM TOKEN -> /api/usuarios/{id}/fcm-token usando AuthService.headers
-  // ===========================
   Future<void> _registerFcmToken({int? userId}) async {
     try {
       if (userId == null) return;
@@ -725,7 +877,6 @@ Future<void> _handleGoogleLogin() async {
       final token = await fcm.getToken();
       if (token == null || token.trim().isEmpty) return;
 
-      // ✅ Un solo método, la cabecera sale de AuthService.headers (Bearer o X-User-Id)
       final res = await AuthService.updateFcmToken(
         userId: userId,
         token: token,
@@ -747,7 +898,6 @@ Future<void> _handleGoogleLogin() async {
   }
 }
 
-/// Botón rojo animado tipo apps 2025
 class _AnimatedPrimaryButton extends StatefulWidget {
   final bool isLoading;
   final VoidCallback? onTap;
@@ -848,7 +998,6 @@ class _AnimatedPrimaryButtonState extends State<_AnimatedPrimaryButton>
   }
 }
 
-/// Link de registro
 class _RegisterLink extends StatelessWidget {
   const _RegisterLink();
 

@@ -1,8 +1,13 @@
+// lib/screens/splash_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../routes/app_routes.dart';
 import '../service/auth_service.dart';
+
+// ✅ NUEVO: guard de penalización y bandera de políticas
+import '../service/abuse_guard_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -13,11 +18,13 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scale;
-  late Animation<double> _opacity;
+  late final AnimationController _controller;
+  late final Animation<double> _scale;
+  late final Animation<double> _opacity;
 
   Timer? _timer;
+
+  static const String kPoliciesAccepted = "policies_accepted_v1";
 
   @override
   void initState() {
@@ -44,28 +51,43 @@ class _SplashScreenState extends State<SplashScreen>
 
     _controller.forward();
 
-    // ⏳ Mantén el splash visible (pero decide ruta según sesión)
     _timer = Timer(const Duration(seconds: 2), () async {
       if (!mounted) return;
 
-      // restoreSession() ya corre en main(), pero si quieres blindarlo:
-      // await AuthService.restoreSession();
+      // ✅ 0) Gate: penalización
+      final penalized = await AbuseGuardService.isPenalized();
+      if (!mounted) return;
+      if (penalized) {
+        AppRoutes.navigateAndClearStack(context, AppRoutes.penalized);
+        return;
+      }
+
+      // ✅ 1) Gate: políticas (ANTES de todo)
+      final prefs = await SharedPreferences.getInstance();
+      final accepted = prefs.getBool(kPoliciesAccepted) ?? false;
+      if (!mounted) return;
+
+      if (!accepted) {
+        AppRoutes.navigateAndClearStack(context, AppRoutes.policies);
+        return;
+      }
+
+      // ✅ 2) Flujo original
+      await AuthService.restoreSession();
 
       final userId = await AuthService.getCurrentUserId();
 
-      // ✅ Si NO hay sesión -> flujo normal (welcome)
       if (userId == null) {
         if (!mounted) return;
         AppRoutes.navigateAndClearStack(context, AppRoutes.welcome);
         return;
       }
 
-      // ✅ Hay sesión -> entrar directo
       final communityId = await AuthService.getCurrentCommunityId();
       if (!mounted) return;
 
       if (communityId == null) {
-        AppRoutes.navigateAndClearStack(context, AppRoutes.verifyCommunity);
+        AppRoutes.navigateAndClearStack(context, AppRoutes.myCommunities);
       } else {
         AppRoutes.navigateAndClearStack(context, AppRoutes.home);
       }
@@ -81,47 +103,70 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   Widget build(BuildContext context) {
-    const Color bgDark = Color(0xFF05070A);
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
     const Color red1 = Color(0xFFFF5A5A);
     const Color red2 = Color(0xFFE53935);
 
+    final Gradient bgGradient = isDark
+        ? const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF05070A), Color(0xFF000000)],
+          )
+        : const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Color(0xFFFFF5F5),
+              Color(0xFFFFEBEE),
+              Color(0xFFFFFFFF),
+            ],
+          );
+
+    final double glowOpacity = isDark ? 0.55 : 0.18;
+    final Color titleColor = isDark ? Colors.white : const Color(0xFF111827);
+
     return Scaffold(
-      backgroundColor: bgDark,
+      backgroundColor: isDark ? const Color(0xFF05070A) : const Color(0xFFFFF5F5),
       body: Stack(
         children: [
-          // Degradado de fondo
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Color(0xFF05070A),
-                  Color(0xFF000000),
-                ],
-              ),
-            ),
-          ),
-
-          // Glow rojo atrás
+          Container(decoration: BoxDecoration(gradient: bgGradient)),
           Positioned(
             bottom: -80,
             right: -40,
             child: Container(
-              width: 220,
-              height: 220,
+              width: 240,
+              height: 240,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: [
-                    red2.withOpacity(0.55),
+                    red2.withOpacity(glowOpacity),
                     Colors.transparent,
                   ],
                 ),
               ),
             ),
           ),
-
+          if (!isDark)
+            Positioned(
+              top: -70,
+              left: -50,
+              child: Container(
+                width: 220,
+                height: 220,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      red1.withOpacity(0.14),
+                      Colors.transparent,
+                    ],
+                  ),
+                ),
+              ),
+            ),
           Center(
             child: AnimatedBuilder(
               animation: _controller,
@@ -137,18 +182,15 @@ class _SplashScreenState extends State<SplashScreen>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // LOGO
                   Container(
                     width: 120,
                     height: 120,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      gradient: const LinearGradient(
-                        colors: [red1, red2],
-                      ),
+                      gradient: const LinearGradient(colors: [red1, red2]),
                       boxShadow: [
                         BoxShadow(
-                          color: red2.withOpacity(0.6),
+                          color: red2.withOpacity(isDark ? 0.60 : 0.25),
                           blurRadius: 28,
                           offset: const Offset(0, 12),
                         ),
@@ -163,10 +205,10 @@ class _SplashScreenState extends State<SplashScreen>
                     ),
                   ),
                   const SizedBox(height: 18),
-                  const Text(
+                  Text(
                     "SafeZone",
                     style: TextStyle(
-                      color: Colors.white,
+                      color: titleColor,
                       fontSize: 22,
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1.1,

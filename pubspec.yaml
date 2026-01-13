@@ -13,51 +13,70 @@ dependencies:
 
   cupertino_icons: ^1.0.8
 
-  # Mapas (OpenStreetMap)
-  flutter_map: ^6.1.0
+  
+  flutter_map: ^8.2.2
   latlong2: ^0.9.0
 
-  # Geolocalización
+  
+  flutter_map_tile_caching: ^10.1.1
+
+  
   geolocator: ^10.1.0
   geocoding: ^3.0.0
 
-  # Permisos
+  
   permission_handler: ^11.1.0
   video_thumbnail: ^0.5.3
+  flag_secure: ^2.0.2
 
-  # Firebase Core & Auth & Messaging
+ 
   firebase_core: ^3.0.0
   firebase_messaging: ^15.0.0
   firebase_auth: ^5.0.0
 
-  # Notificaciones locales (para mostrar FCM en foreground)
+ 
   flutter_local_notifications: ^17.1.0
 
-  # Google Login
+  flutter_native_contact_picker: ^0.0.11
+
+ 
   google_sign_in: ^6.2.1
 
-  # WebSocket
+  
   stomp_dart_client: ^0.4.4
 
-  # Storage
+  
   shared_preferences: ^2.2.2
   url_launcher: ^6.3.0
-
-  # Multimedia
-  image_picker: ^1.0.7
-  record: ^6.1.2
   path_provider: ^2.1.0
 
-  # HTTP
+ 
+  image_picker: ^1.0.7
+  record: ^6.1.2
+
+ 
   http: ^1.2.0
+  font_awesome_flutter: ^10.7.0
+
 
   # Voz
   speech_to_text: ^7.3.0
 
-  # Info del dispositivo (para enviar al backend)
+ 
   device_info_plus: ^10.0.1
 
+  flutter_map_marker_cluster: ^8.2.2
+
+
   curved_navigation_bar: ^1.0.6
+
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  connectivity_plus: ^6.0.3
+  uuid: ^4.5.1
+
+  
+  another_telephony: ^0.4.1
 
 dev_dependencies:
   flutter_test:
@@ -67,4 +86,5 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+   
     - assets/images/
